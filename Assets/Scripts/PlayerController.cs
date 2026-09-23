@@ -45,6 +45,8 @@ public class PlayerController : MonoBehaviour
     private bool isGrounded;
     private bool wasGrounded;
 
+    public bool FacingRight { get; private set; } = true;
+
     private float coyoteCounter;
     private float jumpBufferCounter;
     private float noiseTimer;
@@ -78,6 +80,8 @@ public class PlayerController : MonoBehaviour
         HandleCoyoteAndBuffer();
         HandleGravity();
         HandleNoise();
+        if (Mathf.Abs(moveInput.x) > 0.1f)
+            FacingRight = moveInput.x > 0f;
     }
 
     private void FixedUpdate()
@@ -96,6 +100,8 @@ public class PlayerController : MonoBehaviour
         float newSpeed = Mathf.MoveTowards(rb.linearVelocity.x, targetSpeed, accelRate * Time.fixedDeltaTime);
 
         rb.linearVelocity = new Vector2(newSpeed, rb.linearVelocity.y);
+
+
     }
 
     // ─────────────────────────────────────────────

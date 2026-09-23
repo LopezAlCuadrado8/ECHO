@@ -45,7 +45,7 @@ Material:
     - _Softness: 0.35
     - _ZWrite: 0
     m_Colors:
-    - _Color: {r: 0.00046291947, g: 0.0004397735, b: 0.00037033562, a: 0.0011572987}
+    - _Color: {r: 0.0005071983, g: 0.0006158836, b: 0.00072456896, a: 0.00072456896}
     - _RendererColor: {r: 1, g: 1, b: 1, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

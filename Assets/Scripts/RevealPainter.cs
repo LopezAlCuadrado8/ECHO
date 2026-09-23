@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 public class RevealPainter : MonoBehaviour
@@ -8,22 +9,52 @@ public class RevealPainter : MonoBehaviour
     [SerializeField] private RenderTexture revealRT;
 
     [Header("Brush")]
-    [SerializeField] private Material brushMaterial; // Material con shader "Echo/RevealBrush"
+    [SerializeField] private Material brushMaterial;
     [SerializeField] private Camera worldCamera;
 
-    private Material _tempBrushMaterial;
-    private Material _fadeMaterial;
+    [Header("Debug")]
+    [SerializeField] private bool debugLogs = false;
+
+    private struct PaintCommand
+    {
+        public Vector2 worldPos;
+        public float radius;
+        public Color color;
+    }
+
+    private readonly List<PaintCommand> pendingPaints = new();
+    private Material _runtimeMaterial;
 
     private void Awake()
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
 
-        // Limpiamos la RT al iniciar (todo negro = todo oscuro)
-        ClearRT();
+        if (revealRT == null)
+        {
+            Debug.LogError("[RevealPainter] revealRT NO asignada. Nada se pintará.");
+            return;
+        }
+        if (brushMaterial == null)
+        {
+            Debug.LogError("[RevealPainter] brushMaterial NO asignado. Nada se pintará.");
+            return;
+        }
+        if (worldCamera == null)
+        {
+            worldCamera = Camera.main;
+            if (worldCamera == null)
+            {
+                Debug.LogError("[RevealPainter] worldCamera NO asignada y no hay MainCamera.");
+                return;
+            }
+        }
 
-        _tempBrushMaterial = new Material(brushMaterial);
-        _fadeMaterial = new Material(Shader.Find("Echo/RevealBrush"));
+        // Material runtime (no modifica el asset)
+        _runtimeMaterial = new Material(brushMaterial);
+
+        // Limpiamos la RT al iniciar
+        ClearRT();
     }
 
     private void ClearRT()
@@ -35,60 +66,103 @@ public class RevealPainter : MonoBehaviour
     }
 
     /// <summary>
-    /// Dibuja un blob permanente en la máscara.
+    /// Encola un blob permanente. Se dibujará al final del frame.
     /// </summary>
     public void PaintPermanent(Vector2 worldPos, float radius, Color color)
     {
-        Paint(worldPos, radius, color, _tempBrushMaterial);
+        pendingPaints.Add(new PaintCommand
+        {
+            worldPos = worldPos,
+            radius = radius,
+            color = color
+        });
     }
 
     /// <summary>
-    /// Dibuja un blob temporal. Se desvanecerá con el tiempo.
+    /// Compatibilidad: mismo comportamiento que PaintPermanent.
     /// </summary>
     public void PaintTemporal(Vector2 worldPos, float radius, Color color)
     {
-        Paint(worldPos, radius, color, _tempBrushMaterial);
+        PaintPermanent(worldPos, radius, color);
     }
 
-    private void Paint(Vector2 worldPos, float radius, Color color, Material mat)
+    private void LateUpdate()
     {
-        // Convertimos world → viewport → UV de la RT
-        Vector3 vp = worldCamera.WorldToViewportPoint(worldPos);
-        if (vp.x < -0.2f || vp.x > 1.2f || vp.y < -0.2f || vp.y > 1.2f) return;
+        if (pendingPaints.Count == 0) return;
+        if (revealRT == null || _runtimeMaterial == null) return;
 
-        // Tamaño del brush en UV (viewport units), compensando el aspect ratio
-        float aspect = (float)revealRT.width / revealRT.height;
-        Vector2 sizeUV = new Vector2(radius * 2f, radius * 2f);
-
-        // Escala del brush en NDC: del viewport (0-1) al rango (-1,1) que espera Graphics.Blit-like
-        float scaleX = sizeUV.x;
-        float scaleY = sizeUV.y;
-
-        mat.SetColor("_Color", color);
-        mat.SetFloat("_Softness", 0.35f);
-
+        // Configuramos una sola vez para todos los blobs del frame
         GL.PushMatrix();
         GL.LoadOrtho();
         RenderTexture.active = revealRT;
 
-        mat.SetPass(0);
+        _runtimeMaterial.SetPass(0);
+        // ¿Se mantiene lo pintado?
+        if (debugLogs)
+        {
+            RenderTexture.active = revealRT;
+            Texture2D test = new Texture2D(1, 1);
+            test.ReadPixels(new Rect(512, 288, 1, 1), 0, 0);
+            test.Apply();
+            Debug.Log($"[RevealPainter] ANTES de pintar: píxel central = {test.GetPixel(0, 0)}");
+            Destroy(test);
+        }
+
         GL.Begin(GL.QUADS);
 
-        // Quad centrado en la posición del mundo (en coordenadas viewport)
+        for (int i = 0; i < pendingPaints.Count; i++)
+        {
+            var cmd = pendingPaints[i];
+            DrawBlob(cmd);
+        }
+
+        GL.End();
+        if (debugLogs)
+        {
+            Texture2D test = new Texture2D(1, 1);
+            test.ReadPixels(new Rect(512, 288, 1, 1), 0, 0);
+            test.Apply();
+            Debug.Log($"[RevealPainter] DESPUÉS de pintar: píxel central = {test.GetPixel(0, 0)}");
+            Destroy(test);
+        }
+        GL.PopMatrix();
+        RenderTexture.active = null;
+
+        if (debugLogs)
+            Debug.Log($"[RevealPainter] Dibujados {pendingPaints.Count} blobs este frame.");
+
+        pendingPaints.Clear();
+    }
+
+    private void DrawBlob(PaintCommand cmd)
+    {
+        Vector3 vp = worldCamera.WorldToViewportPoint(cmd.worldPos);
+
+        // Descartamos blobs fuera del viewport (con margen)
+        if (vp.x < -0.5f || vp.x > 1.5f || vp.y < -0.5f || vp.y > 1.5f) return;
+        if (vp.z < 0) return;   // detrás de la cámara
+
+        // Tamaño del quad en viewport units (cuadrado, radio * 2)
+        float halfSize = cmd.radius;
+
+        _runtimeMaterial.SetColor("_Color", cmd.color);
+        _runtimeMaterial.SetFloat("_Softness", 0.35f);
+
         float cx = vp.x;
         float cy = vp.y;
 
-        GL.TexCoord2(0, 0); GL.Vertex3(cx - scaleX * 0.5f, cy - scaleY * 0.5f, 0);
-        GL.TexCoord2(1, 0); GL.Vertex3(cx + scaleX * 0.5f, cy - scaleY * 0.5f, 0);
-        GL.TexCoord2(1, 1); GL.Vertex3(cx + scaleX * 0.5f, cy + scaleY * 0.5f, 0);
-        GL.TexCoord2(0, 1); GL.Vertex3(cx - scaleX * 0.5f, cy + scaleY * 0.5f, 0);
+        GL.TexCoord2(0, 0); GL.Vertex3(cx - halfSize, cy - halfSize, 0);
+        GL.TexCoord2(1, 0); GL.Vertex3(cx + halfSize, cy - halfSize, 0);
+        GL.TexCoord2(1, 1); GL.Vertex3(cx + halfSize, cy + halfSize, 0);
+        GL.TexCoord2(0, 1); GL.Vertex3(cx - halfSize, cy + halfSize, 0);
+    }
 
-        GL.End();
-        GL.PopMatrix();
-
-        RenderTexture.active = null;
-
-        // Si es temporal, programamos su fade
-        // (lo gestiona el TemporalBlobTracker, no aquí)
+    /// <summary>
+    /// Limpia la máscara (llamar al cambiar de nivel).
+    /// </summary>
+    public void ResetMask()
+    {
+        pendingPaints.Clear();
+        ClearRT();
     }
 }

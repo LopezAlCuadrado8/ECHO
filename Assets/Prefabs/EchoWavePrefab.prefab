@@ -83,8 +83,8 @@ SpriteRenderer:
   m_SortingLayer: 0
   m_SortingOrder: 0
   m_MaskInteraction: 0
-  m_Sprite: {fileID: 7482667652216324306, guid: 75f5f34dc1b5347e0b8351032682f224, type: 3}
-  m_Color: {r: 1, g: 1, b: 1, a: 1}
+  m_Sprite: {fileID: 21300000, guid: f082e69f825d0aa44b687e592731c0a8, type: 3}
+  m_Color: {r: 1, g: 1, b: 1, a: 0.16470589}
   m_FlipX: 0
   m_FlipY: 0
   m_DrawMode: 0
@@ -216,18 +216,15 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 17308418228d7f74192d54b1b4f6d353, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::EchoWave
-  rayCount: 64
-  maxDistance: 15
+  samples: 32
   expandSpeed: 12
-  currentRadius: 0
-  maxBounces: 3
-  energyLossPerBounce: 0.5
   revealColor: {r: 1, g: 1, b: 1, a: 1}
   permanentReveal: 1
   obstacleMask:
     serializedVersion: 2
-    m_Bits: 0
-  blobRadiusAtImpact: 0.6
+    m_Bits: 1536
+  frontBlobRadius: 0.2
+  fillEveryNSamples: 2
   visualLineWidth: 0.08
   falloffCurve:
     serializedVersion: 2

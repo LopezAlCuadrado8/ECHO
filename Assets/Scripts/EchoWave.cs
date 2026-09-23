@@ -1,175 +1,160 @@
-using System.Collections.Generic;
 using UnityEngine;
 
 [RequireComponent(typeof(LineRenderer))]
 public class EchoWave : MonoBehaviour
 {
     [Header("Wave Settings")]
-    public int rayCount = 64;              // más rayos = onda más suave
-    public float maxDistance = 15f;
+    [Tooltip("Número de puntos alrededor del anillo. Más = onda más suave, más costoso.")]
+    public int samples = 32;
+    [Tooltip("Velocidad de expansión de la onda (unidades/segundo).")]
     public float expandSpeed = 12f;
-    public float currentRadius = 0f;
-    public int maxBounces = 3;
-    public float energyLossPerBounce = 0.5f;
 
     [Header("Reveal")]
     public Color revealColor = Color.white;
     public bool permanentReveal = true;
+    [Tooltip("Capas que bloquean la onda (paredes, hazards).")]
     public LayerMask obstacleMask;
-    public float blobRadiusAtImpact = 1.2f;
+    [Tooltip("Radio del blob que pinta cada punto del frente de onda.")]
+    public float frontBlobRadius = 0.2f;
+    [Tooltip("Cada cuántas muestras pintamos también el relleno interno.")]
+    public int fillEveryNSamples = 2;
 
     [Header("Visual")]
     public float visualLineWidth = 0.08f;
     public AnimationCurve falloffCurve = AnimationCurve.Linear(0, 1, 1, 0);
 
+    // Runtime
     private LineRenderer line;
     private float distanceTravelled = 0f;
     private float maxRadius;
-    private bool finished = false;
+    private float currentRadius = 0f;
     private float blobRadiusMultiplier = 1f;
+    private bool finished = false;
+    private bool initialized = false;
 
-    private readonly List<Vector3> points = new();
-    private readonly List<Vector3> directions = new();
-    private readonly List<Vector3> origins = new();
-    private readonly List<float> energies = new();
-
-    public void Initialize(Vector2 origin, float maxRadius, int bounces, Color color, bool permanent, float blobMult= 1f)
+    public void Initialize(Vector2 origin, float maxRadius, int bounces, Color color, bool permanent, float blobMult = 1f)
     {
         transform.position = origin;
+
         this.maxRadius = maxRadius;
-        this.maxBounces = bounces;
         this.revealColor = color;
         this.permanentReveal = permanent;
         this.blobRadiusMultiplier = blobMult;
 
+        // LineRenderer
         line = GetComponent<LineRenderer>();
         line.positionCount = 0;
         line.startWidth = visualLineWidth;
         line.endWidth = visualLineWidth;
         line.useWorldSpace = true;
-        line.material = new Material(Shader.Find("Sprites/Default"));
+
+        // Material del LineRenderer (necesita existir en build)
+        if (line.material == null || line.material.shader == null)
+        {
+            line.material = new Material(Shader.Find("Sprites/Default"));
+        }
         line.startColor = color;
         line.endColor = color;
 
-        // Inicializamos rayos en todas las direcciones
-        for (int i = 0; i < rayCount; i++)
-        {
-            float angle = i * Mathf.PI * 2f / rayCount;
-            Vector3 dir = new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), 0);
-            directions.Add(dir);
-            origins.Add(origin);
-            energies.Add(1f);
-        }
-
+        // Reset estado
+        distanceTravelled = 0f;
+        currentRadius = 0f;
+        finished = false;
+        initialized = true;
     }
 
     private void Update()
     {
-        if (finished) return;
+        if (!initialized || finished) return;
 
         distanceTravelled += expandSpeed * Time.deltaTime;
         currentRadius = distanceTravelled;
 
-        // Actualizamos el visual de la onda (círculo)
         DrawWaveVisual();
-
-        // A cierta distancia, hacemos los raycasts para revelar
-        // (no cada frame para no spamear el painter)
-        if (Time.frameCount % 3 == 0)
-        {
-            CastEchoRays();
-        }
+        PaintWaveFront();
 
         if (currentRadius >= maxRadius)
-        {
             Finish();
-        }
     }
 
-    private void CastEchoRays()
+    private void PaintWaveFront()
     {
-        for (int i = 0; i < directions.Count; i++)
+        if (RevealPainter.Instance == null && TemporalBlobTracker.Instance == null)
         {
-            if (energies[i] <= 0.05f) continue;
+            // Ni siquiera hay painter. No pintamos nada.
+            return;
+        }
 
-            Vector3 origin = origins[i];
-            Vector3 dir = directions[i];
-            float remaining = maxRadius - currentRadius;
+        float angleStep = Mathf.PI * 2f / samples;
 
-            if (remaining <= 0) continue;
+        for (int i = 0; i < samples; i++)
+        {
+            float angle = i * angleStep;
+            Vector2 dir = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
+            Vector2 origin = transform.position;
 
-            RaycastHit2D hit = Physics2D.Raycast(origin, dir, remaining, obstacleMask);
+            // ¿Hay pared antes de llegar al radio actual?
+            Vector2 point;
+            float energy = 1f;
 
-            if (hit.collider != null)
+            if (obstacleMask != 0)
             {
-                // ¡Impacto! Revelamos un blob en el punto de impacto
-                RevealAt(hit.point, energies[i]);
-
-                // Generamos un eco secundario (rebote)
-                if (maxBounces > 0)
+                RaycastHit2D hit = Physics2D.Raycast(origin, dir, currentRadius, obstacleMask);
+                if (hit.collider != null)
                 {
-                    Vector3 reflectDir = Vector3.Reflect(dir, hit.normal);
-                    SpawnSubEcho(hit.point, reflectDir, energies[i] * energyLossPerBounce);
+                    point = hit.point;
+                    energy = 0.6f;
                 }
-
-                // Este rayo muere aquí
-                energies[i] = 0;
+                else
+                {
+                    point = origin + dir * currentRadius;
+                }
             }
             else
             {
-                // El rayo llegó al final sin chocar: revelamos un blob tenue al final
-                Vector3 end = origin + dir * remaining;
-                RevealAt(end, energies[i] * 0.4f);
+                // Sin máscara de obstáculos, la onda pasa a través de todo
+                point = origin + dir * currentRadius;
+            }
+
+            // Blob del frente (anillo visible)
+            Color c = revealColor * energy;
+            c.a = 1f;
+            float frontRadius = frontBlobRadius * blobRadiusMultiplier;
+            PaintAt(point, frontRadius, c);
+
+            // Relleno interno tenue (cada N muestras)
+            if (fillEveryNSamples > 0 && i % fillEveryNSamples == 0 && currentRadius > 0.8f)
+            {
+                Vector2 innerPoint = origin + dir * (currentRadius * 0.5f);
+                Color innerColor = revealColor * 0.25f;
+                innerColor.a = 1f;
+                float innerRadius = currentRadius * 0.3f;
+                PaintAt(innerPoint, innerRadius, innerColor);
             }
         }
     }
 
-    private void RevealAt(Vector3 point, float energy)
+    private void PaintAt(Vector2 point, float radius, Color color)
     {
-        if (energy <= 0.05f) return;
-
-        float radius = blobRadiusAtImpact * energy * blobRadiusMultiplier;
-        Color c = revealColor * energy;
-        c.a = 1f;
-
-        // Pintamos en la máscara correspondiente
         if (permanentReveal)
-            RevealPainter.Instance.PaintPermanent(point, radius, c);
-        else
-            TemporalBlobTracker.Instance.AddBlob(point, radius, c);
-    }
-
-    private void SpawnSubEcho(Vector3 origin, Vector3 dir, float energy)
-    {
-        // En lugar de crear un GameObject nuevo (costoso), 
-        // podríamos añadir un rayo secundario a este mismo EchoWave.
-        // Para claridad ahora, creamos un sub-eco ligero:
-        StartCoroutine(SubEchoRoutine(origin, dir, energy));
-    }
-
-    private System.Collections.IEnumerator SubEchoRoutine(Vector3 origin, Vector3 dir, float energy)
-    {
-        // Simulamos un eco que viaja hasta chocar (rebote)
-        float dist = maxRadius * 0.6f;
-        RaycastHit2D hit = Physics2D.Raycast(origin, dir, dist, obstacleMask);
-
-        float travelTime = 0.08f;
-        yield return new WaitForSeconds(travelTime);
-
-        if (hit.collider != null)
         {
-            RevealAt(hit.point, energy);
+            if (RevealPainter.Instance != null)
+                RevealPainter.Instance.PaintPermanent(point, radius, color);
         }
         else
         {
-            RevealAt(origin + dir * dist, energy * 0.4f);
+            if (TemporalBlobTracker.Instance != null)
+                TemporalBlobTracker.Instance.AddBlob(point, radius, color);
         }
     }
 
     private void DrawWaveVisual()
     {
+        if (line == null) return;
+
         int segs = 48;
         line.positionCount = segs + 1;
+
         for (int i = 0; i <= segs; i++)
         {
             float a = i * Mathf.PI * 2f / segs;
@@ -177,8 +162,8 @@ public class EchoWave : MonoBehaviour
             line.SetPosition(i, p);
         }
 
-        // Fade del visual según el radio
-        float t = Mathf.Clamp01(currentRadius / maxRadius);
+        // Fade visual según el radio
+        float t = Mathf.Clamp01(currentRadius / Mathf.Max(0.01f, maxRadius));
         Color c = revealColor;
         c.a = falloffCurve.Evaluate(t);
         line.startColor = c;
@@ -188,6 +173,10 @@ public class EchoWave : MonoBehaviour
     private void Finish()
     {
         finished = true;
-        Destroy(gameObject, 0.2f);
+
+        // Un último frame de pintado para cerrar el círculo
+        PaintWaveFront();
+
+        Destroy(gameObject, 0.05f);
     }
 }
